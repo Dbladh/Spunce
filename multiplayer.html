@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Firebase Multiplayer Shooter</title>
+  <script src="https://www.gstatic.com/firebasejs/11.6.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.6.0/firebase-database-compat.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #1e1e1e;
+    }
+    canvas {
+      display: block;
+      margin: auto;
+      background: #333;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas" tabindex="0" width="800" height="450"></canvas>
+  <div id="nameInputUI" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 20; background: rgba(0, 0, 0, 0.8); padding: 20px; color: white; font-size: 18px; border-radius: 8px;">
+    <label for="playerNameInput">Enter your name:</label><br>
+    <input id="playerNameInput" type="text" maxlength="12" style="font-size: 18px; margin-top: 10px;" />
+    <button id="submitNameBtn" style="font-size: 18px; margin-left: 10px;">Join</button>
+  </div>
+  <script>
+    class Player {
+      constructor(color, name) {
+        this.color = color;
+        this.name = name;
+        this.x = color === 'red' ? 100 : 650;
+        this.y = 400;
+        this.vx = 0;
+        this.vy = 0;
+        this.width = 40;
+        this.height = 40;
+        this.onGround = false;
+        this.canJump = true;
+        this.cooldown = 0;
+        this.alive = true;
+        this.lastDirection = 'right';
+        this.recoilFrame = 0;
+      }
+
+      update() {
+        if (!this.alive) return;
+        if (keys['ArrowLeft']) {
+          this.vx -= 1.0;
+          this.lastDirection = 'left';
+        }
+        if (keys['ArrowRight']) {
+          this.vx += 1.0;
+          this.lastDirection = 'right';
+        }
+        if (this.onGround && keys['ArrowUp'] && this.canJump) {
+          this.vy = -12;
+          this.onGround = false;
+          this.canJump = false;
+        }
+
+        this.vx *= FRICTION;
+        this.vy += GRAVITY;
+        this.x += this.vx;
+        this.y += this.vy;
+
+        if (this.y + this.height > canvas.height) {
+          this.y = canvas.height - this.height;
+          this.vy = 0;
+          this.onGround = true;
+        }
+
+        if (this.x + this.width < 0) this.x = canvas.width;
+        if (this.x > canvas.width) this.x = -this.width;
+
+        if (keys[' '] && this.cooldown <= 0 && gameRunning) {
+          const bulletRef = gameRef.child("bullets").push();
+          bulletRef.set({
+            x: this.x + this.width / 2,
+            y: this.y + 10,
+            vx: this.lastDirection === 'right' ? 8 : -8,
+            color: this.color,
+            name: this.name
+          });
+          this.cooldown = 20;
+          this.recoilFrame = 3;
+        }
+
+        if (this.cooldown > 0) this.cooldown--;
+
+        gameRef.child(`players/${this.color}`).set({
+          name: this.name,
+          x: this.x,
+          y: this.y,
+          alive: this.alive,
+          lastDirection: this.lastDirection
+        });
+      }
+
+      draw() {
+        if (!this.alive) return;
+        ctx.fillStyle = this.color;
+        let recoilOffset = this.recoilFrame ? (this.lastDirection === 'right' ? -4 : 4) : 0;
+        ctx.fillRect(this.x + recoilOffset, this.y, this.width, this.height);
+        if (this.recoilFrame) this.recoilFrame--;
+        ctx.fillStyle = 'white';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(this.name, this.x + this.width / 2, this.y - 5);
+      }
+    }
+
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    const GRAVITY = 0.6;
+    const FRICTION = 0.8;
+
+    let keys = {};
+    let myColor = null;
+    let myPlayer = null;
+    let players = {};
+    let bullets = [];
+    let remotePlayers = {};
+    let countdown = 5;
+    let countdownActive = false;
+    let gameOver = false;
+    let gameRunning = false;
+    let playerName = "";
+    let winnerMessage = "";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyC5GHKh7sK9y02GMKjQGiRWtdPEOaev_gU",
+      authDomain: "online-multiplayer-test.firebaseapp.com",
+      projectId: "online-multiplayer-test",
+      storageBucket: "online-multiplayer-test.appspot.com",
+      messagingSenderId: "467346612454",
+      appId: "1:467346612454:web:82189732533d30d0489b27",
+      databaseURL: "https://online-multiplayer-test-default-rtdb.firebaseio.com"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+    const gameRef = db.ref("games/game1");
+    const gameStateRef = gameRef.child("state");
+
+    function init() {
+      gameRef.child("players").once("value").then(snapshot => {
+        players = snapshot.val() || {};
+        const takenColors = Object.keys(players);
+        const allColors = ["red", "blue", "green", "yellow", "purple", "orange", "cyan", "pink"];
+        const availableColors = allColors.filter(c => !takenColors.includes(c));
+
+        if (availableColors.length === 0) {
+          alert("Game full. Only 8 players allowed.");
+          return;
+        }
+
+        myColor = availableColors[0];
+        myPlayer = new Player(myColor, playerName);
+        const playerRef = gameRef.child(`players/${myColor}`);
+        playerRef.onDisconnect().remove();
+        playerRef.set({
+          name: myPlayer.name,
+          x: myPlayer.x,
+          y: myPlayer.y,
+          alive: myPlayer.alive,
+          lastDirection: myPlayer.lastDirection
+        });
+
+        gameRef.child("players").on("value", snap => {
+          const updatedPlayers = snap.val() || {};
+          const currentRemoteColors = new Set(Object.keys(updatedPlayers));
+
+          Object.entries(updatedPlayers).forEach(([color, data]) => {
+            if (color !== myColor) {
+              if (!remotePlayers[color]) {
+                remotePlayers[color] = new Player(color, data.name || color);
+              }
+              const p = remotePlayers[color];
+              p.x = data.x;
+              p.y = data.y;
+              p.alive = data.alive;
+              p.lastDirection = data.lastDirection;
+            } else if (myPlayer) {
+              myPlayer.alive = data.alive;
+            }
+          });
+
+          Object.keys(remotePlayers).forEach(color => {
+            if (!currentRemoteColors.has(color)) {
+              delete remotePlayers[color];
+            }
+          });
+
+          players = updatedPlayers;
+        });
+
+        gameRef.child("bullets").on("child_added", snap => {
+          const b = snap.val();
+          bullets.push({ x: b.x, y: b.y, vx: b.vx, color: b.color, name: b.name });
+        });
+
+        document.addEventListener('keydown', e => {
+          if (e.key === 'Enter' && gameOver) {
+            gameRef.remove().then(() => location.reload());
+          } else if (e.key === 'Enter' && !gameRunning && !countdownActive && myColor === 'red' && Object.keys(players).length >= 2) {
+            countdownActive = true;
+            countdown = 5;
+            let interval = setInterval(() => {
+              countdown--;
+              if (countdown <= 0) {
+                clearInterval(interval);
+                gameStateRef.set({ running: true });
+              }
+            }, 1000);
+          }
+        });
+
+        gameStateRef.on("value", snap => {
+          const state = snap.val();
+          gameRunning = state?.running || false;
+        });
+
+        gameLoop();
+
+function gameLoop() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (myPlayer) {
+    if (!gameOver) myPlayer.update();
+    myPlayer.draw();
+  }
+
+  Object.values(remotePlayers).forEach(p => {
+    if (p.alive) {
+      p.draw();
+    }
+  });
+
+  bullets.forEach((b, i) => {
+    b.x += b.vx;
+    ctx.fillStyle = b.color;
+    ctx.fillRect(b.x, b.y, 8, 4);
+
+    if (myPlayer && b.color !== myColor && myPlayer.alive) {
+      const hit =
+        b.x < myPlayer.x + myPlayer.width &&
+        b.x + 8 > myPlayer.x &&
+        b.y < myPlayer.y + myPlayer.height &&
+        b.y + 4 > myPlayer.y;
+      if (hit) {
+        gameRef.child(`players/${myColor}/alive`).set(false);
+      }
+    }
+  });
+
+  const alivePlayers = Object.values(players || {}).filter(p => p.alive);
+  if (gameRunning && alivePlayers.length === 1) {
+    gameRunning = false;
+    gameOver = true;
+    winnerMessage = `${alivePlayers[0].name} wins! Press Enter to restart.`;
+    gameStateRef.set({ running: false });
+  }
+
+  if (gameOver && winnerMessage) {
+    ctx.fillStyle = 'white';
+    ctx.font = '28px sans-serif';
+    ctx.textAlign = 'center';
+    for (let i = 0; i < winnerMessage.length; i++) {
+      const char = winnerMessage[i];
+      const x = canvas.width / 2 - ctx.measureText(winnerMessage).width / 2 + ctx.measureText(winnerMessage.substring(0, i)).width;
+      const y = canvas.height / 2 + Math.sin((Date.now() / 400) + i * 0.3) * 4;
+      ctx.fillText(char, x, y);
+    }
+  }
+
+  if (!gameRunning && countdownActive && countdown > 0) {
+    ctx.fillStyle = 'white';
+    ctx.font = '36px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`Game starting in ${countdown}...`, canvas.width / 2, canvas.height / 2);
+  }
+
+  const playerCount = Object.values(players || {}).length;
+  if (!gameRunning && !countdownActive) {
+    let message = '';
+    if (playerCount < 2) {
+      message = 'Waiting for at least 1 more player to join the game...';
+    } else if (players?.red?.name) {
+      message = `${players.red.name} must press Enter to start the game...`;
+    }
+
+    if (message) {
+      ctx.fillStyle = 'white';
+      ctx.font = '16px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(message, canvas.width / 2, 40);
+    }
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+      });
+    }
+
+    document.getElementById("submitNameBtn").onclick = () => {
+      const input = document.getElementById("playerNameInput").value.trim();
+      playerName = input || "Anonymous";
+      document.getElementById("nameInputUI").style.display = "none";
+      document.getElementById("gameCanvas").focus();
+      init();
+    };
+
+    canvas.addEventListener('click', () => canvas.focus());
+
+    window.addEventListener('keydown', e => {
+      if (e.code === 'Space') e.preventDefault();
+      keys[e.key] = true;
+      if (e.key === 'Escape') {
+        gameRef.remove().then(() => {
+          remotePlayers = {};
+          players = {};
+          bullets = [];
+          myPlayer = null;
+          gameRunning = false;
+          countdownActive = false;
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          location.reload();
+        });
+      }
+    });
+
+    window.addEventListener('keyup', e => {
+      keys[e.key] = false;
+      if (e.key === 'ArrowUp' && myPlayer) {
+        myPlayer.canJump = true;
+      }
+    });
+  </script>
+</body>
+</html>
