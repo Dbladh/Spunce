@@ -5,73 +5,243 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Firebase Multiplayer Shooter</title>
   <script src="https://www.gstatic.com/firebasejs/11.6.0/firebase-app-compat.js"></script>
-<script>
+  <script src="https://www.gstatic.com/firebasejs/11.6.0/firebase-database-compat.js"></script>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #1e1e1e;
+    }
+    canvas {
+      display: block;
+      margin: auto;
+      background: #333;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas" style="z-index: 0; position: relative;" tabindex="0" width="800" height="450"></canvas>
+  <div id="nameInputUI" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 20; background: rgba(0, 0, 0, 0.8); width: 400px; padding: 20px; color: white; font-size: 18px; border-radius: 8px;">
+    <label for="playerNameInput" style="font-weight: bold; font-size: 16px;">Your Name (required):</label><br>
+<input id="playerNameInput" type="text" maxlength="12" style="font-size: 18px; margin-top: 10px; width: 100%;" /><br><br><label for="restaurantInput" style="font-weight: bold; font-size: 16px;">Restaurant Choice (required):</label><br>
+<input id="restaurantInput" type="text" maxlength="20" style="font-size: 18px; margin-top: 10px; width: 100%;" />
+    <button id="submitNameBtn" style="font-size: 18px; margin-top: 16px; display: block; margin-left: auto; margin-right: auto;">Join</button>
+  </div>
+  <script>
+    const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+const GRAVITY = 0.6;
+const FRICTION = 0.8;
+let keys = {};
+let myColor = null;
+let myPlayer = null;
+let players = {};
+let bullets = [];
+let remotePlayers = {};
+let countdown = 5;
+let countdownActive = false;
+let gameOver = false;
+let gameRunning = false;
+let playerName = "";
+let restaurantName = "";
+let winnerMessage = "";
+let platforms = [];
+let shrinkTimerStarted = false;
+let shrinkStartTime = 0;
+let boxShrinkActive = false;
+let fadeOutAlpha = 0.3;
+let warningActive = false;
+let warningFlashing = false;
+let box = { x: 0, y: 0, width: canvas.width, height: canvas.height };
+
+const firebaseConfig = {
+  apiKey: "AIzaSyC5GHKh7sK9y02GMKjQGiRWtdPEOaev_gU",
+  authDomain: "online-multiplayer-test.firebaseapp.com",
+  projectId: "online-multiplayer-test",
+  storageBucket: "online-multiplayer-test.appspot.com",
+  messagingSenderId: "467346612454",
+  appId: "1:467346612454:web:82189732533d30d0489b27",
+  databaseURL: "https://online-multiplayer-test-default-rtdb.firebaseio.com"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+const gameRef = db.ref("games/game1");
+const gameStateRef = gameRef.child("state");
+
+function generatePlatforms() {
+  platforms = [];
+  for (let i = 0; i < 6; i++) {
+    let width = 120;
+    let height = 24;
+    let x = Math.random() * (canvas.width - width);
+    let y = Math.random() * (canvas.height - 150) + 50;
+    let moveTypes = ["none", "horizontal", "vertical"];
+    platforms.push({
+      x,
+      y,
+      width,
+      height,
+      moveType: ["horizontal", "vertical"][Math.floor(Math.random() * 2)],
+      speed: Math.random() * 0.8 + 0.2,
+
+      direction: 1,
+      originalX: x,
+      originalY: y
+    });
+  }
+}
+
+class Player {
+  constructor(color, name) {
+    this.color = color;
+    this.name = name;
+    this.x = color === 'red' ? 100 : 650;
+    this.y = 400;
+    this.vx = 0;
+    this.vy = 0;
+    this.width = 40;
+    this.height = 40;
+    this.onGround = false;
+    this.canJump = true;
+    this.jumping = false;
+    this.jumpHoldTime = 0;
+    this.cooldown = 0;
+    this.alive = true;
+    this.lastDirection = 'right';
+    this.recoilFrame = 0;
+  }
+  update() {
+    if (!this.alive) return;
+    if (keys['ArrowLeft']) {
+      this.vx -= 1.0;
+      this.lastDirection = 'left';
+    }
+    if (keys['ArrowRight']) {
+      this.vx += 1.0;
+      this.lastDirection = 'right';
+    }
+    if (this.onGround && keys['ArrowUp'] && this.canJump) {
+      this.vy = -6;
+      this.jumpHoldTime = 0;
+      this.jumping = true;
+      this.onGround = false;
+      this.canJump = false;
+    }
+    this.vx *= FRICTION;
+    if (this.jumping && keys['ArrowUp'] && this.jumpHoldTime < 15) {
+      this.vy -= 0.7;
+      this.jumpHoldTime++;
+    } else {
+      this.jumping = false;
+    }
+    this.vy += GRAVITY;
+    this.x += this.vx;
+    this.y += this.vy;
+    this.onGround = false;
+
+    for (let p of platforms) {
+      const isOnTop = this.y + this.height > p.y && this.y + this.height < p.y + p.height && this.x + this.width > p.x && this.x < p.x + p.width && this.vy >= 0;
+      if (isOnTop) {
+        this.y = p.y - this.height;
+        this.vy = 0;
+        this.onGround = true;
+        if (p.moveType === 'horizontal') this.x += p.direction * 0.4;
+        if (p.moveType === 'vertical') this.y += p.direction * 0.4;
+      }
+    }
+
+    if (this.y + this.height > canvas.height) {
+      this.y = canvas.height - this.height;
+      this.vy = 0;
+      this.onGround = true;
+    }
+
+    if (this.x + this.width < 0) this.x = canvas.width;
+    if (this.x > canvas.width) this.x = -this.width;
+
+    if (keys[' '] && this.cooldown <= 0 && gameRunning && this.alive) {
+      const bulletRef = gameRef.child("bullets").push();
+      bulletRef.set({
+        x: this.x + this.width / 2,
+        y: this.y + 10,
+        vx: this.lastDirection === 'right' ? 8 : -8,
+        color: this.color,
+        name: this.name
+      });
+      this.cooldown = 20;
+      this.recoilFrame = 3;
+    }
+
+    if (this.cooldown > 0) this.cooldown--;
+    gameRef.child(`players/${this.color}`).set({
+      name: this.name,
+      restaurant: restaurantName,
+      x: this.x,
+      y: this.y,
+      alive: this.alive,
+      lastDirection: this.lastDirection
+    });
+  }
+  draw() {
+    if (!this.alive) return;
+    ctx.fillStyle = this.color;
+    let recoilOffset = this.recoilFrame ? (this.lastDirection === 'right' ? -4 : 4) : 0;
+    ctx.fillRect(this.x + recoilOffset, this.y, this.width, this.height);
+    if (this.recoilFrame) this.recoilFrame--;
+    ctx.fillStyle = 'white';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(this.name, this.x + this.width / 2, this.y - 5);
+  }
+}
+
 function gameLoop() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  platforms.forEach(p => {
+
+  for (let p of platforms) {
     if (p.moveType === 'horizontal') {
-      p.x += 0.4 * p.direction;
-      if (!p.originalX) p.originalX = p.x;
+    p.x += p.speed * p.direction;
       if (Math.abs(p.x - p.originalX) > 200 || p.x <= 0 || p.x + p.width >= canvas.width) p.direction *= -1;
     } else if (p.moveType === 'vertical') {
-      p.y += 0.4 * p.direction;
-      if (!p.originalY) p.originalY = p.y;
+    p.y += p.speed * p.direction;
       if (Math.abs(p.y - p.originalY) > 200 || p.y <= 0 || p.y + p.height >= canvas.height) p.direction *= -1;
     }
     ctx.fillStyle = '#888';
     ctx.fillRect(p.x, p.y, p.width, p.height);
-  });
-
-  if (myPlayer) {
-    if (!gameOver) myPlayer.update();
-    myPlayer.draw();
   }
 
+  if (myPlayer) {
+    myPlayer.update();
+    myPlayer.draw();
   Object.values(remotePlayers).forEach(p => {
     if (p.alive) p.draw();
   });
+  }
 
-  bullets.forEach((b, i) => {
+  bullets = bullets.filter(b => gameRunning);
+bullets.forEach((b, i) => {
     b.x += b.vx;
+
     const hitPlatform = platforms.some(p =>
       b.x < p.x + p.width && b.x + 8 > p.x && b.y < p.y + p.height && b.y + 4 > p.y
     );
     if (hitPlatform) return;
+
     ctx.fillStyle = b.color;
     ctx.fillRect(b.x, b.y, 8, 4);
+
     if (myPlayer && b.color !== myColor && myPlayer.alive) {
       const hit = b.x < myPlayer.x + myPlayer.width && b.x + 8 > myPlayer.x && b.y < myPlayer.y + myPlayer.height && b.y + 4 > myPlayer.y;
       if (hit) gameRef.child(`players/${myColor}/alive`).set(false);
     }
   });
 
-  const alivePlayers = Object.values(players || {}).filter(p => p.alive);
-  if (gameRunning && alivePlayers.length === 1) {
-    gameRunning = false;
-    gameOver = true;
-    winnerMessage = `${alivePlayers[0].name} wins! Press Enter to restart.`;
-    gameStateRef.set({ running: false });
-    boxShrinkActive = false;
-    fadeOutAlpha = 0.3;
-    box = { x: 0, y: 0, width: canvas.width, height: canvas.height };
-  }
-
-  if (gameOver && winnerMessage) {
-    ctx.fillStyle = 'white';
-    ctx.font = '28px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(winnerMessage, canvas.width / 2, canvas.height / 2);
-  
-  }
-
   if (!gameRunning && countdownActive && countdown > 0) {
-    ctx.fillStyle = 'white';
-    ctx.font = '24px sans-serif';
-    ctx.fillText(`Players: ${Object.keys(players).length}`, canvas.width / 2, canvas.height / 2 - 40);
     ctx.fillStyle = 'white';
     ctx.font = '36px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(`Game starting in ${countdown}...`, canvas.width / 2, canvas.height / 2);
+    ctx.fillText(`Game starting in ${countdown}...`, canvas.width / 2, 60);
   } else if (!gameRunning && !countdownActive) {
     ctx.fillStyle = 'white';
     ctx.font = '24px sans-serif';
@@ -79,8 +249,39 @@ function gameLoop() {
     const text = Object.keys(players).length < 2 ?
       'Waiting for at least 1 more player to join the game...' :
       `${players['red']?.name || 'Player 1'} must press Enter to start the game...`;
-    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
-  } if (gameRunning && !shrinkTimerStarted) {
+    ctx.fillText(text, canvas.width / 2, 60);
+  }
+
+  if (gameOver && winnerMessage) {
+    ctx.fillStyle = 'white';
+    ctx.font = '28px sans-serif';
+    ctx.textAlign = 'center';
+
+    const lines = winnerMessage.split('\n');
+    const startY = canvas.height / 2 - (lines.length * 20);
+    lines.forEach((line, index) => {
+      ctx.fillText(line, canvas.width / 2, startY + index * 40);
+    });
+  }
+
+  const alivePlayers = Object.values(players || {}).filter(p => p.alive);
+  if (gameRunning && alivePlayers.length === 1) {
+    gameRunning = false;
+    gameOver = true;
+    const winner = alivePlayers[0];
+    gameStateRef.set({
+      running: false,
+      winnerMessage: `${winner.name} wins!
+
+Restaurant Choice: ${winner.restaurant || 'Unknown'}
+
+Press Enter to restart.`
+    });
+  
+  }
+
+    // Box shrink logic
+  if (gameRunning && !shrinkTimerStarted) {
     shrinkStartTime = Date.now();
     shrinkTimerStarted = true;
   }
@@ -118,7 +319,7 @@ function gameLoop() {
   }
 
   if (fadeOutAlpha > 0 && gameOver) fadeOutAlpha -= 0.01;
-else if (boxShrinkActive && fadeOutAlpha <= 0.3) fadeOutAlpha = 0.3;
+  else if (boxShrinkActive && fadeOutAlpha <= 0.3) fadeOutAlpha = 0.3;
 
   if (warningActive) {
     warningFlashing = Math.floor(Date.now() / 500) % 2 === 0;
@@ -132,193 +333,9 @@ else if (boxShrinkActive && fadeOutAlpha <= 0.3) fadeOutAlpha = 0.3;
 
   requestAnimationFrame(gameLoop);
 }
-</script>
-  <script src="https://www.gstatic.com/firebasejs/11.6.0/firebase-database-compat.js"></script>
-  <style>
-    html, body {
-      margin: 0;
-      padding: 0;
-      overflow: hidden;
-      background: #1e1e1e;
-    }
-    canvas {
-      display: block;
-      margin: auto;
-      background: #333;
-    }
-  </style>
-</head>
-<body>
-  <canvas id="gameCanvas" style="z-index: 0; position: relative;" tabindex="0" width="800" height="450"></canvas>
-  <div id="nameInputUI" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 20; background: rgba(0, 0, 0, 0.8); padding: 20px; color: white; font-size: 18px; border-radius: 8px;">
-    <label for="playerNameInput">Enter your name:</label><br>
-    <input id="playerNameInput" type="text" maxlength="12" style="font-size: 18px; margin-top: 10px;" />
-    <button id="submitNameBtn" style="font-size: 18px; margin-left: 10px;">Join</button>
-  </div>
-  <script>
-    const canvas = document.getElementById("gameCanvas");
-    const ctx = canvas.getContext("2d");
-    const GRAVITY = 0.6;
-    const FRICTION = 0.8;
-    let keys = {};
-    let myColor = null;
-    let myPlayer = null;
-    let players = {};
-    let bullets = [];
-    let remotePlayers = {};
-    let countdown = 5;
-    let countdownActive = false;
-    let gameOver = false;
-    let gameRunning = false;
-    let playerName = "";
-    let winnerMessage = "";
-    let platforms = [];
-    let shrinkTimerStarted = false;
-    let shrinkStartTime = 0;
-    let boxShrinkActive = false;
-    let fadeOutAlpha = 0;
-    let warningActive = false;
-    let warningFlashing = false;
-    let box = { x: 0, y: 0, width: canvas.width, height: canvas.height };
 
-    const firebaseConfig = {
-      apiKey: "AIzaSyC5GHKh7sK9y02GMKjQGiRWtdPEOaev_gU",
-      authDomain: "online-multiplayer-test.firebaseapp.com",
-      projectId: "online-multiplayer-test",
-      storageBucket: "online-multiplayer-test.appspot.com",
-      messagingSenderId: "467346612454",
-      appId: "1:467346612454:web:82189732533d30d0489b27",
-      databaseURL: "https://online-multiplayer-test-default-rtdb.firebaseio.com"
-    };
-    firebase.initializeApp(firebaseConfig);
-    const db = firebase.database();
-    const gameRef = db.ref("games/game1");
-    const gameStateRef = gameRef.child("state");
-
-    function generatePlatforms() {
-      const num = 7;
-      platforms = [];
-      for (let i = 0; i < num; i++) {
-        let width = 120;
-        let height = 15;
-        let x = Math.random() * (canvas.width - width);
-        let yBand;
-        if (i < 3) yBand = [canvas.height - 120, canvas.height - 70];
-        else if (i < 5) yBand = [canvas.height / 2 - 10, canvas.height / 2 + 50];
-        else yBand = [80, 140];
-        let y = Math.random() * (yBand[1] - yBand[0]) + yBand[0];
-        let tooClose = platforms.some(p =>
-          Math.abs(p.x - x) < 150 && Math.abs(p.y - y) < 80
-        );
-        if (!tooClose) {
-          let moveTypes = ["none", "horizontal", "vertical"];
-          platforms.push({ x, y, width, height, moveType: moveTypes[Math.floor(Math.random() * 3)], direction: 1 });
-        } else {
-          i--;
-        }
-      }
-    }
-    generatePlatforms();
-
-    class Player {
-      constructor(color, name) {
-        this.color = color;
-        this.name = name;
-        this.x = color === 'red' ? 100 : 650;
-        this.y = 400;
-        this.vx = 0;
-        this.vy = 0;
-        this.width = 40;
-        this.height = 40;
-        this.onGround = false;
-        this.canJump = true;
-    this.jumping = false;
-    this.jumpHoldTime = 0;
-        this.cooldown = 0;
-        this.alive = true;
-        this.lastDirection = 'right';
-        this.recoilFrame = 0;
-      }
-      update() {
-        if (!this.alive) return;
-        if (keys['ArrowLeft']) {
-          this.vx -= 1.0;
-          this.lastDirection = 'left';
-        }
-        if (keys['ArrowRight']) {
-          this.vx += 1.0;
-          this.lastDirection = 'right';
-        }
-        if (this.onGround && keys['ArrowUp'] && this.canJump) {
-          this.vy = -6;
-          this.jumpHoldTime = 0;
-          this.jumping = true;
-          this.onGround = false;
-          this.canJump = false;
-        }
-        this.vx *= FRICTION;
-        if (this.jumping && keys['ArrowUp'] && this.jumpHoldTime < 15) {
-          this.vy -= 0.7;
-          this.jumpHoldTime++;
-        } else {
-          this.jumping = false;
-        }
-        this.vy += GRAVITY;
-        this.x += this.vx;
-        this.y += this.vy;
-        this.onGround = false;
-        if (this.y + this.height > canvas.height) {
-          this.y = canvas.height - this.height;
-          this.vy = 0;
-          this.onGround = true;
-        }
-        platforms.forEach(p => {
-          const isOnTop = this.y + this.height > p.y && this.y + this.height < p.y + p.height && this.x + this.width > p.x && this.x < p.x + p.width && this.vy >= 0;
-          if (isOnTop) {
-            this.y = p.y - this.height;
-            this.vy = 0;
-            this.onGround = true;
-            if (p.moveType === 'horizontal') this.x += p.direction * 0.4;
-            if (p.moveType === 'vertical') this.y += p.direction * 0.4;
-          }
-        });
-        if (this.x + this.width < 0) this.x = canvas.width;
-        if (this.x > canvas.width) this.x = -this.width;
-        if (keys[' '] && this.cooldown <= 0 && gameRunning && this.alive) {
-          const bulletRef = gameRef.child("bullets").push();
-          bulletRef.set({
-            x: this.x + this.width / 2,
-            y: this.y + 10,
-            vx: this.lastDirection === 'right' ? 8 : -8,
-            color: this.color,
-            name: this.name
-          });
-          this.cooldown = 20;
-          this.recoilFrame = 3;
-        }
-        if (this.cooldown > 0) this.cooldown--;
-        gameRef.child(`players/${this.color}`).set({
-          name: this.name,
-          x: this.x,
-          y: this.y,
-          alive: this.alive,
-          lastDirection: this.lastDirection
-        });
-      }
-      draw() {
-        if (!this.alive) return;
-        ctx.fillStyle = this.color;
-        let recoilOffset = this.recoilFrame ? (this.lastDirection === 'right' ? -4 : 4) : 0;
-        ctx.fillRect(this.x + recoilOffset, this.y, this.width, this.height);
-        if (this.recoilFrame) this.recoilFrame--;
-        ctx.fillStyle = 'white';
-        ctx.font = '12px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(this.name, this.x + this.width / 2, this.y - 5);
-      }
-    }
-
-    function init() {
+function init() {
+  generatePlatforms();
   gameRef.child("players").once("value").then(snapshot => {
     players = snapshot.val() || {};
     const takenColors = Object.keys(players);
@@ -334,6 +351,7 @@ else if (boxShrinkActive && fadeOutAlpha <= 0.3) fadeOutAlpha = 0.3;
     playerRef.onDisconnect().remove();
     playerRef.set({
       name: myPlayer.name,
+      restaurant: restaurantName,
       x: myPlayer.x,
       y: myPlayer.y,
       alive: myPlayer.alive,
@@ -365,6 +383,10 @@ else if (boxShrinkActive && fadeOutAlpha <= 0.3) fadeOutAlpha = 0.3;
     });
     gameRef.child("bullets").on("child_added", snap => {
       const b = snap.val();
+      if (!gameRunning) {
+        gameRef.child(`bullets/${snap.key}`).remove();
+        return;
+      }
       bullets.push({ x: b.x, y: b.y, vx: b.vx, color: b.color, name: b.name });
     });
     document.addEventListener('keydown', e => {
@@ -385,6 +407,7 @@ else if (boxShrinkActive && fadeOutAlpha <= 0.3) fadeOutAlpha = 0.3;
     gameStateRef.on("value", snap => {
       const state = snap.val();
       gameRunning = state?.running || false;
+      if (state?.winnerMessage) winnerMessage = state.winnerMessage;
     });
     gameLoop();
   });
@@ -392,17 +415,21 @@ else if (boxShrinkActive && fadeOutAlpha <= 0.3) fadeOutAlpha = 0.3;
 
 document.getElementById("submitNameBtn").onclick = () => {
   const input = document.getElementById("playerNameInput").value.trim();
-  playerName = input || "Anonymous";
+  const restaurant = document.getElementById("restaurantInput").value.trim();
+
+  if (!input || !restaurant) {
+    alert("Please enter both your name and a restaurant name to join.");
+    return;
+  }
+
+  playerName = input;
+  restaurantName = restaurant;
   document.getElementById("nameInputUI").style.display = "none";
   document.getElementById("gameCanvas").focus();
   init();
 };
 
-canvas.addEventListener('click', () => canvas.focus());
-
 window.addEventListener('keydown', e => {
-  if (e.code === 'Space') e.preventDefault();
-  keys[e.key] = true;
   if (e.key === 'Escape') {
     gameRef.remove().then(() => {
       remotePlayers = {};
@@ -411,10 +438,14 @@ window.addEventListener('keydown', e => {
       myPlayer = null;
       gameRunning = false;
       countdownActive = false;
+      gameOver = false;
+      winnerMessage = "";
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       location.reload();
     });
+    return;
   }
+  keys[e.key] = true;
 });
 
 window.addEventListener('keyup', e => {
@@ -423,6 +454,8 @@ window.addEventListener('keyup', e => {
     myPlayer.canJump = true;
   }
 });
+    // This file was accidentally overwritten with only the gameLoop function.
+    // Please reinsert the full game logic code as before to restore proper game behavior.
   </script>
 </body>
 </html>
