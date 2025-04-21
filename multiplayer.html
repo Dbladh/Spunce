@@ -271,7 +271,7 @@ function gameLoop() {
     for (let i = 0; i < winnerMessage.length; i++) {
       const char = winnerMessage[i];
       const x = canvas.width / 2 - ctx.measureText(winnerMessage).width / 2 + ctx.measureText(winnerMessage.substring(0, i)).width;
-      const y = canvas.height / 2 + Math.sin((Date.now() / 400) + i * 0.3) * 4;
+      const y = canvas.height / 2 + Math.sin((Date.now() / 600) + i * 0.2) * 2;
       ctx.fillText(char, x, y);
     }
   }
